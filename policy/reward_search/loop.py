@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 
 import numpy as np
@@ -27,12 +28,13 @@ from .rewards import SEED_REWARDS, RewardError, compile_reward
 
 
 def evaluate(name: str, code: str, plant: Plant, seed: int,
-             genome: list | None = None, bounds=None) -> Candidate | None:
+             genome: list | None = None, bounds=None, verbose: bool = True) -> Candidate | None:
     """Compile a reward, optimize gains against it, grade with ground-truth fitness."""
     try:
         reward_fn = compile_reward(code)
     except RewardError as e:
-        print(f"  [skip] {name}: {e}")
+        if verbose:
+            print(f"  [skip] {name}: {e}")
         return None
     kw = {"seed": seed}
     if bounds is not None:
@@ -42,13 +44,33 @@ def evaluate(name: str, code: str, plant: Plant, seed: int,
     cand.gains = gains  # type: ignore[attr-defined]  (stashed for reporting)
     cand.genome = genome  # type: ignore[attr-defined]  (local proposer evolves this)
     m = cand.metrics
-    print(
-        f"  {name:28s} fitness={cand.fitness:8.4f}  "
-        f"settle={m['settle_time']:.3f}s overshoot={m['overshoot']*100:4.1f}% "
-        f"ss_err={m['ss_error']:.4f}  gains(kp={gains.position_kp:.1f}, "
-        f"kd={gains.velocity_kp:.2f}, ki={gains.position_ki:.2f})"
-    )
+    if verbose:
+        print(
+            f"  {name:28s} fitness={cand.fitness:8.4f}  "
+            f"settle={m['settle_time']:.3f}s overshoot={m['overshoot']*100:4.1f}% "
+            f"ss_err={m['ss_error']:.4f}  gains(kp={gains.position_kp:.1f}, "
+            f"kd={gains.velocity_kp:.2f}, ki={gains.position_ki:.2f})"
+        )
     return cand
+
+
+def _fmt_hms(s: float) -> str:
+    s = int(s)
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m{s % 60:02d}s" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+
+def _progress_bar(gen: int, total: int, best_fit: float, t_start: float, width: int = 26) -> None:
+    """In-place progress bar with % and ETA (stderr, so it works even when stdout is piped)."""
+    frac = gen / total if total else 1.0
+    elapsed = time.perf_counter() - t_start
+    eta = (elapsed / frac - elapsed) if frac > 0 else 0.0
+    filled = int(width * frac)
+    bar = "█" * filled + "░" * (width - filled)
+    sys.stderr.write(
+        f"\r[{bar}] {frac * 100:5.1f}%  gen {gen}/{total}  best={best_fit:8.4f}  "
+        f"elapsed {_fmt_hms(elapsed)}  ETA {_fmt_hms(eta)}    "
+    )
+    sys.stderr.flush()
 
 
 def _log_candidate(fp, gen: int, cand: Candidate) -> None:
@@ -97,6 +119,8 @@ def main() -> None:
     ap.add_argument("--best-out", default="reward_search_best.json")
     ap.add_argument("--log", default=None,
                     help="JSONL path to append every candidate (overnight history)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print every candidate (default: clean progress bar only)")
     args = ap.parse_args()
 
     plant = Plant()
@@ -117,44 +141,50 @@ def main() -> None:
             _log_candidate(log_fp, gen, c)
 
     mode = "local" if args.local else ("dry-run" if args.dry_run else "api")
+    total = 0 if args.dry_run else args.iterations
     print(f"plant inertia={plant.inertia:g} kg·m²  damping={plant.damping:g}  "
-          f"coulomb={plant.coulomb:g}   mode={mode}")
-    print("Generation 0: seed rewards")
+          f"coulomb={plant.coulomb:g}   mode={mode}   {total} generations x {args.candidates} candidates")
+    print("Generation 0: seed rewards ...")
     for name, code in SEED_REWARDS.items():
-        c = evaluate(name, code, plant, args.seed, bounds=bounds)
+        c = evaluate(name, code, plant, args.seed, bounds=bounds, verbose=args.verbose)
         if c:
             record(0, c)
 
     best = max(history, key=lambda c: c.fitness)
     _write_best(args.best_out, best, plant)  # checkpoint after gen 0
 
+    t_start = time.perf_counter()
     if args.dry_run:
         print("\n[dry-run] stopping after seeds (no proposals).")
     else:
         for gen in range(1, args.iterations + 1):
-            t0 = time.perf_counter()
             if args.local:
                 from .propose_local import propose_rewards_local
                 proposed = propose_rewards_local(history, args.candidates, rng)
             else:
-                print(f"\nGeneration {gen}: asking {args.model} for {args.candidates} rewards")
                 try:
                     proposed = [(n, c, None) for n, c in
                                 propose_rewards(history, args.candidates, model=args.model)]
                 except Exception as e:                          # noqa: BLE001
+                    sys.stderr.write("\n")
                     print(f"  proposal call failed ({e}); stopping. "
                           "Check API access, or run with --local / --dry-run.")
                     break
             gen_best = best.fitness
             for name, code, genome in proposed:
-                c = evaluate(f"g{gen}:{name}", code, plant, args.seed, genome=genome, bounds=bounds)
+                c = evaluate(f"g{gen}:{name}", code, plant, args.seed,
+                             genome=genome, bounds=bounds, verbose=args.verbose)
                 if c:
                     record(gen, c)
             best = max(history, key=lambda c: c.fitness)
             _write_best(args.best_out, best, plant)            # checkpoint each generation
-            improved = "^" if best.fitness > gen_best else " "
-            print(f"[gen {gen:3d}] best fitness={best.fitness:8.4f} {improved}  "
-                  f"({len(history)} evaluated, {time.perf_counter()-t0:.1f}s)")
+            if best.fitness > gen_best + 1e-9:                 # milestone: print above the bar
+                g = best.gains  # type: ignore[attr-defined]
+                sys.stderr.write("\r" + " " * 90 + "\r")       # clear bar line
+                print(f"  gen {gen:3d}: new best fitness={best.fitness:.4f}  "
+                      f"(kp={g.position_kp:.1f} kd={g.velocity_kp:.2f} ki={g.position_ki:.2f})")
+            _progress_bar(gen, args.iterations, best.fitness, t_start)
+        sys.stderr.write("\n")                                 # finish the bar line
 
     if log_fp:
         log_fp.close()
