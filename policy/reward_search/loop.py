@@ -27,14 +27,17 @@ from .rewards import SEED_REWARDS, RewardError, compile_reward
 
 
 def evaluate(name: str, code: str, plant: Plant, seed: int,
-             genome: list | None = None) -> Candidate | None:
+             genome: list | None = None, bounds=None) -> Candidate | None:
     """Compile a reward, optimize gains against it, grade with ground-truth fitness."""
     try:
         reward_fn = compile_reward(code)
     except RewardError as e:
         print(f"  [skip] {name}: {e}")
         return None
-    gains, resp, _ = optimize_gains(reward_fn, plant, seed=seed)
+    kw = {"seed": seed}
+    if bounds is not None:
+        kw["bounds"] = bounds
+    gains, resp, _ = optimize_gains(reward_fn, plant, **kw)
     cand = Candidate(name=name, code=code, fitness=fitness(resp), metrics=step_metrics(resp))
     cand.gains = gains  # type: ignore[attr-defined]  (stashed for reporting)
     cand.genome = genome  # type: ignore[attr-defined]  (local proposer evolves this)
@@ -88,6 +91,9 @@ def main() -> None:
     ap.add_argument("--damping", type=float, default=None, help="plant viscous damping")
     ap.add_argument("--coulomb", type=float, default=None,
                     help="plant Coulomb friction (Nm); previews a Phase-1 condition")
+    ap.add_argument("--kp-max", type=float, default=60.0, help="upper bound of position_kp search")
+    ap.add_argument("--kd-max", type=float, default=5.0, help="upper bound of velocity_kp (Kd) search")
+    ap.add_argument("--ki-max", type=float, default=2.0, help="upper bound of position_ki search")
     ap.add_argument("--best-out", default="reward_search_best.json")
     ap.add_argument("--log", default=None,
                     help="JSONL path to append every candidate (overnight history)")
@@ -100,6 +106,7 @@ def main() -> None:
         plant.damping = args.damping
     if args.coulomb is not None:
         plant.coulomb = args.coulomb
+    bounds = np.array([[0.0, args.kp_max], [0.0, args.kd_max], [0.0, args.ki_max]])
     rng = np.random.default_rng(args.seed)
     history: list[Candidate] = []
     log_fp = open(args.log, "a") if args.log else None
@@ -114,7 +121,7 @@ def main() -> None:
           f"coulomb={plant.coulomb:g}   mode={mode}")
     print("Generation 0: seed rewards")
     for name, code in SEED_REWARDS.items():
-        c = evaluate(name, code, plant, args.seed)
+        c = evaluate(name, code, plant, args.seed, bounds=bounds)
         if c:
             record(0, c)
 
@@ -140,7 +147,7 @@ def main() -> None:
                     break
             gen_best = best.fitness
             for name, code, genome in proposed:
-                c = evaluate(f"g{gen}:{name}", code, plant, args.seed, genome=genome)
+                c = evaluate(f"g{gen}:{name}", code, plant, args.seed, genome=genome, bounds=bounds)
                 if c:
                     record(gen, c)
             best = max(history, key=lambda c: c.fitness)

@@ -1,0 +1,87 @@
+{
+  "firmware": {
+    "param": "0x4",
+    "value": 50462720,
+    "status": "OK"
+  },
+  "mode": {
+    "param": "0x10",
+    "value": 1,
+    "status": "OK"
+  },
+  "error": {
+    "param": "0x14",
+    "value": 0,
+    "status": "OK"
+  },
+  "gear_ratio": {
+    "param": "0x1c",
+    "value": 15.0,
+    "status": "OK"
+  },
+  "position_kp": {
+    "param": "0x20",
+    "value": 20.0,
+    "status": "OK"
+  },
+  "position_ki": {
+    "param": "0x24",
+    "value": 0.0,
+    "status": "OK"
+  },
+  "velocity_kp": {
+    "param": "0x28",
+    "value": 1.0,
+    "status": "OK"
+  },
+  "torque_limit": {
+    "param": "0x30",
+    "value": 6.0,
+    "status": "OK"
+  },
+  "position_offset": {
+    "param": "0x40",
+    "value": -0.08600521087646484,
+    "status": "OK"
+  },
+  "torque_constant": {
+    "param": "0x108",
+    "value": 0.0895799994468689,
+    "status": "OK"
+  },
+  "phase_order": {
+    "param": "0x10c",
+    "value": -1,
+    "status": "OK"
+  },
+  "current_kp": {
+    "param": "0x78",
+    "value": 0.1909559965133667,
+    "status": "OK"
+  },
+  "current_ki": {
+    "param": "0x7c",
+    "value": 4538.416015625,
+    "status": "OK"
+  },
+  "encoder_flux_offset": {
+    "param": "0x13c",
+    "value": 73.36698150634766,
+    "status": "OK"
+  },
+  "encoder_pos_offset": {
+    "param": "0x124",
+    "value": 0.0,
+    "status": "OK"
+  },
+  "bus_voltage": {
+    "param": "0x100",
+    "value": 19.691553115844727,
+    "status": "OK"
+  },
+  "velocity_limit": {
+    "param": "0x34",
+    "value": 20.0,
+    "status": "OK"
+  }
+}

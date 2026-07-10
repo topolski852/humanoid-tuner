@@ -42,6 +42,14 @@ class MotorSpec:
     no_load_current: float | None = None    # A, I0 (rough Coulomb-friction proxy)
     pole_pairs: int | None = None
 
+    # --- bench-MEASURED plant params (real2sim; None until characterized) -----
+    # From position-mode system-ID on the bench (bench/fit_plant.py): effective
+    # OUTPUT-shaft inertia + friction of the real motor, no load.
+    measured_inertia: float | None = None      # kg·m², effective output inertia
+    coulomb_friction: float | None = None      # N·m, Coulomb (dominant on this motor)
+    viscous_damping: float | None = None        # N·m·s/rad
+    latency_s: float | None = None              # command->response latency
+
     # --- provenance (free-text, so the numbers are never silently trusted) ----
     notes: str = ""
 
@@ -86,13 +94,21 @@ M6C12_150KV = MotorSpec(
     phase_resistance=0.1886,
     phase_inductance=0.0325e-3,
     mass=0.260,
-    no_load_current=None,          # datasheet: "TBA"; unmeasured
+    no_load_current=None,          # datasheet: "TBA"; superseded by measured friction below
     pole_pairs=11,                 # 24N22P (datasheet) — NOT 14; firmware config stores 14
+    # BENCH-MEASURED (right_hip_yaw ESC, device 4, free shaft) — bench/fitted_plant.json.
+    # Effective output inertia 0.0274 (vs 0.0224 datasheet estimate); Coulomb friction
+    # 0.30 N·m (step-fit) / 0.33 N·m (ramp i_q) — two independent methods agree.
+    measured_inertia=0.02743,
+    coulomb_friction=0.302,
+    viscous_damping=0.023,
+    latency_s=0.0072,
     notes=(
         "Kt firmware-measured 0.08958 (char-test 0.0919). Rotor inertia & R/L from "
-        "Berkeley Humanoid Lite characterization (measured). I0 unpublished; friction "
-        "unmeasured -> Phase-0 uses no friction. Datasheet pole count is 22 (11 pp), "
-        "not the firmware config's 14 — irrelevant to Phase-0 (ideal current loop)."
+        "Berkeley Humanoid Lite characterization. Datasheet pole count is 22 (11 pp). "
+        "Bench system-ID (fit RMS 10.8 mrad over 18 steps): effective output inertia "
+        "0.0274 kg·m², Coulomb 0.30 N·m, viscous 0.023, latency 7.2 ms — the toy sim "
+        "had coulomb=0, so friction is entirely new real physics."
     ),
 )
 
