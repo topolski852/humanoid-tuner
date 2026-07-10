@@ -21,6 +21,7 @@ import numpy as np
 
 from sim.actuator import Plant
 from sim.metrics import fitness, step_metrics
+from sim.robust import robust_fitness
 
 from .optimize import optimize_gains
 from .propose import Candidate, propose_rewards
@@ -28,8 +29,14 @@ from .rewards import SEED_REWARDS, RewardError, compile_reward
 
 
 def evaluate(name: str, code: str, plant: Plant, seed: int,
-             genome: list | None = None, bounds=None, verbose: bool = True) -> Candidate | None:
-    """Compile a reward, optimize gains against it, grade with ground-truth fitness."""
+             genome: list | None = None, bounds=None, verbose: bool = True,
+             robust_plants: list | None = None) -> Candidate | None:
+    """Compile a reward, optimize gains against it, grade with ground-truth fitness.
+
+    With `robust_plants`, gains are optimized for worst-case reward across the
+    perturbed set and graded by worst-case fitness — so the search prefers gains
+    with stability margin over cliff-edge nominal optima.
+    """
     try:
         reward_fn = compile_reward(code)
     except RewardError as e:
@@ -39,8 +46,11 @@ def evaluate(name: str, code: str, plant: Plant, seed: int,
     kw = {"seed": seed}
     if bounds is not None:
         kw["bounds"] = bounds
+    if robust_plants is not None:
+        kw["robust_plants"] = robust_plants
     gains, resp, _ = optimize_gains(reward_fn, plant, **kw)
-    cand = Candidate(name=name, code=code, fitness=fitness(resp), metrics=step_metrics(resp))
+    graded = robust_fitness(gains, robust_plants) if robust_plants else fitness(resp)
+    cand = Candidate(name=name, code=code, fitness=graded, metrics=step_metrics(resp))
     cand.gains = gains  # type: ignore[attr-defined]  (stashed for reporting)
     cand.genome = genome  # type: ignore[attr-defined]  (local proposer evolves this)
     m = cand.metrics
@@ -113,6 +123,9 @@ def main() -> None:
     ap.add_argument("--damping", type=float, default=None, help="plant viscous damping")
     ap.add_argument("--coulomb", type=float, default=None,
                     help="plant Coulomb friction (Nm); previews a Phase-1 condition")
+    ap.add_argument("--robust", action="store_true",
+                    help="optimize + grade under plant perturbation (worst-case) so gains "
+                         "have stability margin instead of sitting on the nominal cliff")
     ap.add_argument("--kp-max", type=float, default=60.0, help="upper bound of position_kp search")
     ap.add_argument("--kd-max", type=float, default=5.0, help="upper bound of velocity_kp (Kd) search")
     ap.add_argument("--ki-max", type=float, default=2.0, help="upper bound of position_ki search")
@@ -131,6 +144,10 @@ def main() -> None:
     if args.coulomb is not None:
         plant.coulomb = args.coulomb
     bounds = np.array([[0.0, args.kp_max], [0.0, args.kd_max], [0.0, args.ki_max]])
+    robust_plants = None
+    if args.robust:
+        from sim.robust import perturbed_plants
+        robust_plants = perturbed_plants(plant, seed=args.seed)
     rng = np.random.default_rng(args.seed)
     history: list[Candidate] = []
     log_fp = open(args.log, "a") if args.log else None
@@ -146,7 +163,7 @@ def main() -> None:
           f"coulomb={plant.coulomb:g}   mode={mode}   {total} generations x {args.candidates} candidates")
     print("Generation 0: seed rewards ...")
     for name, code in SEED_REWARDS.items():
-        c = evaluate(name, code, plant, args.seed, bounds=bounds, verbose=args.verbose)
+        c = evaluate(name, code, plant, args.seed, bounds=bounds, verbose=args.verbose, robust_plants=robust_plants)
         if c:
             record(0, c)
 
@@ -173,7 +190,7 @@ def main() -> None:
             gen_best = best.fitness
             for name, code, genome in proposed:
                 c = evaluate(f"g{gen}:{name}", code, plant, args.seed,
-                             genome=genome, bounds=bounds, verbose=args.verbose)
+                             genome=genome, bounds=bounds, verbose=args.verbose, robust_plants=robust_plants)
                 if c:
                     record(gen, c)
             best = max(history, key=lambda c: c.fitness)

@@ -36,16 +36,29 @@ def optimize_gains(
     refine_rounds: int = 4,
     step_rad: float = 0.5,
     seed: int = 0,
+    robust_plants: list[Plant] | None = None,
 ) -> tuple[Gains, Response, float]:
-    """Return (best_gains, best_response, best_reward) for this reward function."""
+    """Return (best_gains, best_response, best_reward) for this reward function.
+
+    If `robust_plants` is given, each gain candidate is scored by its WORST-CASE
+    reward across that perturbed plant set (domain randomization), so the search
+    avoids stability-cliff gains that only work on the nominal plant. The returned
+    response is always on the nominal `plant` (for consistent grading).
+    """
     plant = plant or Plant()
     rng = np.random.default_rng(seed)
     lo, hi = bounds[:, 0], bounds[:, 1]
 
     def score(x: np.ndarray) -> tuple[float, Response]:
-        resp = simulate_step(_make_gains(x), plant, step_rad=step_rad)
+        gains = _make_gains(x)
+        resp = simulate_step(gains, plant, step_rad=step_rad)
         try:
-            return reward_fn(resp), resp
+            if robust_plants:
+                r = min(reward_fn(simulate_step(gains, p, step_rad=step_rad))
+                        for p in robust_plants)
+            else:
+                r = reward_fn(resp)
+            return r, resp
         except Exception:                       # a reward that blows up on some gains
             return -np.inf, resp                # is simply unfit there, not fatal
 
