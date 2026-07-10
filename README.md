@@ -45,11 +45,20 @@ UDP to the daemon.
 
 | dir | what |
 |---|---|
-| `sim/`    | single-actuator model (replicates the firmware control law) + RL training env |
+| `sim/`    | lightweight single-actuator sim (replicates the firmware control law) + ground-truth metrics |
 | `bench/`  | host-side bridge to the Studio daemon: telemetry → response features → gain writes |
-| `policy/` | RL training code + trained artifacts |
+| `policy/` | [`reward_search/`](policy/reward_search/) — Eureka-style reward design (Claude writes rewards, the loop grades them); RL trainer later |
 | `deploy/` | runtime that runs the trained tuner on real hardware / plugs into Studio (later) |
 | `docs/`   | [DESIGN.md](docs/DESIGN.md) — architecture, phased plan, interface facts |
+
+## Quick start
+
+```bash
+# see the reward-search pipeline run on built-in seed rewards (no API key needed):
+python -m policy.reward_search.loop --dry-run
+# the real Eureka loop — Claude proposes each generation:
+python -m policy.reward_search.loop --iterations 5 --candidates 6
+```
 
 ## Phases
 

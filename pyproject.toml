@@ -4,14 +4,17 @@ version = "0.0.0"
 description = "AI-assisted motor gain tuner — learned gain scheduling for real robot joints"
 requires-python = ">=3.10"
 dependencies = [
-    # bench bridge speaks UDP/JSON to the Humanoid-Studio daemon (stdlib only for now)
+    # single-actuator sim + reward search (Phase 0); bench bridge is stdlib-only
     "numpy",
 ]
 
-# Training/sim deps (RL framework, sim substrate) are intentionally deferred until the
-# substrate decision in docs/DESIGN.md §6 is made. Add an optional group then, e.g.:
-# [project.optional-dependencies]
-# train = ["torch", "rsl-rl-lib", ...]
+[project.optional-dependencies]
+# the Eureka-style reward loop needs the Anthropic SDK to have Claude propose rewards.
+# (--dry-run grades the seed rewards with no SDK/key.)
+search = ["anthropic"]
+
+# RL trainer deps (torch, rsl-rl, or an Isaac Lab substrate) are deferred until the
+# inner optimizer is swapped for the real gain-scheduling policy — add a `train` group then.
 
 [build-system]
 requires = ["hatchling"]

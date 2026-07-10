@@ -20,6 +20,9 @@ data/
 *.csv
 *.npz
 
+# Reward-search output
+reward_search_best.json
+
 # Editors / OS
 .vscode/
 .idea/

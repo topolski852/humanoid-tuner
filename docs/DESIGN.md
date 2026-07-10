@@ -188,8 +188,9 @@ tighten the sim.
   space overnight). Confirm feasibility / parts.
 - **i_q polling rate:** is faster `GENERIC_SDO_READ` of 0x0C0 worth it for effort features,
   or is position-only sufficient for Phase 0/1? (Probably position-only to start.)
-- **Sim substrate:** reuse Isaac Lab + RSL-RL from `humanoid-policy`, or a lighter
-  single-actuator ODE model? The control law is simple enough that a lightweight sim may
-  train faster; revisit once the reward is proven.
+- **Sim substrate:** ~~reuse Isaac Lab, or a lighter single-actuator ODE model?~~
+  **RESOLVED for Phase 0: lightweight numpy** (`sim/actuator.py`, replicates the §3
+  control law). Runs in seconds, no Isaac Lab dependency. Revisit for a richer plant
+  in Phase 1+ if the numpy model proves too coarse.
 - **Studio integration surface:** does the tuner run as a daemon UDP client the app spawns,
   or ship as a library the backend imports? (Mirror how `humanoid-control` plugs in.)
