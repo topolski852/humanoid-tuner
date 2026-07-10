@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+
+# Training artifacts / logs
+logs/
+runs/
+wandb/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+
+# Bench captures
+data/
+*.csv
+*.npz
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
