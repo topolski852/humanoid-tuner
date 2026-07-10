@@ -84,6 +84,22 @@ functions automatically and honestly, with no human eyeballing training curves. 
 also structurally resists reward hacking — a reward the policy games will score badly
 on the true objective, so the loop discards it.
 
+### Where Claude fits — and why an LLM
+
+**Why an LLM does this job** (rather than a blind numerical optimizer like Bayesian
+optimization): reward design is a *reasoning-and-code* problem, not just a
+number-tuning one. Claude reads the task, understands what each reward term *means*,
+reasons about *why* a policy gamed a reward, and writes new reward code in response. A
+numerical optimizer only nudges numbers with no notion of what they represent. The LLM
+is what lets the search reason about the reward instead of brute-forcing it.
+
+**How Claude is wired in: it's a periodic consultant, not a live observer.** The
+Python harness runs continuously and does all the heavy lifting; Claude is called only
+at generation boundaries — once to propose a batch of rewards, once to reflect on the
+finished results and propose the next batch. It reads a short *summary* of completed
+runs (the objective scores), never the live training. So its token cost is small,
+bounded, and negligible next to the GPU time — details in Part 2.
+
 ## Why it would benefit us
 
 Two concrete applications, one already built, one proposed.
@@ -114,7 +130,9 @@ for exactly this kind of Isaac-based locomotion task. The payoff:
 
 The idea is proven; the honest cost is that **for locomotion, each reward candidate
 means a full RL training run** (minutes to an hour on GPU), not a millisecond sim. A
-search is dozens of training runs — roughly **~20 GPU-hours per search**. The biggest
+search is dozens of training runs — roughly **~20 GPU-hours per search**. (Claude's own token cost is a rounding error by
+comparison — it's called only a handful of times per search, not during training; see
+*How Claude is used, in practice* in Part 2.) The biggest
 mitigation is short "proxy" runs to rank candidates cheaply before committing to full
 runs on the winners. (Full mechanics in Part 2.)
 
@@ -222,6 +240,36 @@ Concretely, that:
   to full convergence with the normal `scripts/rsl_rl/train.py`, exactly as you train
   any reward today. The search's job is only to *find the good reward*; producing the
   final policy is your normal pipeline, unchanged.
+
+## How Claude is used, in practice
+
+Worth being precise about Claude's role, because "an LLM in the training loop" can
+sound like Claude is watching every step and burning tokens for hours. It isn't.
+
+**Two things run during a search, and only one is Claude:**
+
+- **The orchestrator** (`eureka/search.py`, plain Python) runs the whole time —
+  launching training, waiting on runs, parsing objective scores, managing the loop.
+  This is the process that's "on" for the full ~20 GPU-hours. It uses **no tokens.**
+- **Claude is called only at generation boundaries** — roughly twice per generation:
+  once to **propose** the batch of candidate rewards, once to **reflect** on the
+  finished results and propose the next batch. In between, while every training run
+  executes, Claude is idle.
+
+**Claude reads summaries, not live training.** Each call feeds it the prior
+candidates' reward code plus their *objective scores and metric breakdown* — a few
+thousand tokens — and gets back the next batch of reward functions. It never ingests
+training curves in real time or watches a run in progress.
+
+**So the token cost is small and bounded** — it scales with the number of
+*generations*, not with training wall-clock. A 5-generation × 6-candidate search is
+~10 Claude calls, on the order of **$1–2 in tokens total**. Against ~20 GPU-hours,
+that's a rounding error: the GPU time is the cost, Claude is cheap.
+
+**Could we make Claude more active?** Yes — e.g. have it peek at partial training
+curves to kill weak candidates early. That adds token cost and complexity, and
+standard Eureka doesn't do it. The clean design keeps Claude a periodic consultant the
+harness calls, and lets the GPU do the expensive work uninterrupted.
 
 ## How it merges into the code
 
