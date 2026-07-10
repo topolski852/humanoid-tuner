@@ -69,16 +69,22 @@ def _fmt_hms(s: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m{s % 60:02d}s" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
 
 
-def _progress_bar(gen: int, total: int, best_fit: float, t_start: float, width: int = 26) -> None:
-    """In-place progress bar with % and ETA (stderr, so it works even when stdout is piped)."""
+def _progress_bar(gen: int, total: int, best_fit: float, t_start: float, width: int = 26,
+                  stale: int = 0, patience: int = 0) -> None:
+    """In-place progress bar with % and ETA (stderr, so it works even when stdout is piped).
+
+    With `patience`, also shows the plateau counter (generations since improvement)
+    so you can watch convergence approach the early-stop threshold.
+    """
     frac = gen / total if total else 1.0
     elapsed = time.perf_counter() - t_start
     eta = (elapsed / frac - elapsed) if frac > 0 else 0.0
     filled = int(width * frac)
     bar = "█" * filled + "░" * (width - filled)
+    plateau = f"  plateau {stale}/{patience}" if patience else ""
     sys.stderr.write(
         f"\r[{bar}] {frac * 100:5.1f}%  gen {gen}/{total}  best={best_fit:8.4f}  "
-        f"elapsed {_fmt_hms(elapsed)}  ETA {_fmt_hms(eta)}    "
+        f"elapsed {_fmt_hms(elapsed)}  ETA {_fmt_hms(eta)}{plateau}    "
     )
     sys.stderr.flush()
 
@@ -110,7 +116,13 @@ def _write_best(path: str, best: Candidate, plant: Plant) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Eureka-style reward search for gain tuning")
-    ap.add_argument("--iterations", type=int, default=3, help="outer generations")
+    ap.add_argument("--iterations", type=int, default=3,
+                    help="MAX outer generations (a safety cap; may stop earlier via --patience)")
+    ap.add_argument("--patience", type=int, default=0,
+                    help="stop early once the best hasn't improved for this many generations "
+                         "(0 = off, run all --iterations). Auto-detects a plateau.")
+    ap.add_argument("--min-delta", type=float, default=1e-4,
+                    help="minimum fitness gain that counts as an improvement (plateau tolerance)")
     ap.add_argument("--candidates", type=int, default=6, help="rewards proposed per generation")
     ap.add_argument("--dry-run", action="store_true", help="use seed rewards only; no API calls")
     ap.add_argument("--local", action="store_true",
@@ -171,6 +183,8 @@ def main() -> None:
     _write_best(args.best_out, best, plant)  # checkpoint after gen 0
 
     t_start = time.perf_counter()
+    stale = 0                                                  # generations since last improvement
+    stopped = "reached max generations"
     if args.dry_run:
         print("\n[dry-run] stopping after seeds (no proposals).")
     else:
@@ -186,6 +200,7 @@ def main() -> None:
                     sys.stderr.write("\n")
                     print(f"  proposal call failed ({e}); stopping. "
                           "Check API access, or run with --local / --dry-run.")
+                    stopped = "proposal failure"
                     break
             gen_best = best.fitness
             for name, code, genome in proposed:
@@ -195,13 +210,21 @@ def main() -> None:
                     record(gen, c)
             best = max(history, key=lambda c: c.fitness)
             _write_best(args.best_out, best, plant)            # checkpoint each generation
-            if best.fitness > gen_best + 1e-9:                 # milestone: print above the bar
+            if best.fitness > gen_best + args.min_delta:       # real improvement -> reset patience
+                stale = 0
                 g = best.gains  # type: ignore[attr-defined]
-                sys.stderr.write("\r" + " " * 90 + "\r")       # clear bar line
+                sys.stderr.write("\r" + " " * 100 + "\r")      # clear bar line
                 print(f"  gen {gen:3d}: new best fitness={best.fitness:.4f}  "
                       f"(kp={g.position_kp:.1f} kd={g.velocity_kp:.2f} ki={g.position_ki:.2f})")
-            _progress_bar(gen, args.iterations, best.fitness, t_start)
+            else:
+                stale += 1
+            _progress_bar(gen, args.iterations, best.fitness, t_start,
+                          stale=stale, patience=args.patience)
+            if args.patience and stale >= args.patience:       # plateau -> stop early
+                stopped = f"converged (no improvement for {args.patience} generations, stopped at gen {gen})"
+                break
         sys.stderr.write("\n")                                 # finish the bar line
+        print(f"[stop] {stopped}")
 
     if log_fp:
         log_fp.close()
