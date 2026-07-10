@@ -23,6 +23,9 @@ data/
 # Reward-search output
 reward_search_best.json
 
+# Isaac generated plots (asset USD is committed; plots are regenerated)
+sim/isaac/*.png
+
 # Editors / OS
 .vscode/
 .idea/

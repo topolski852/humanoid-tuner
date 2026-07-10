@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .control_law import FirmwarePositionController
+
 
 @dataclass
 class Gains:
@@ -64,23 +66,21 @@ def simulate_step(
     n = int(duration * ctrl_hz)
     stride = max(1, int(round(ctrl_hz / sample_hz)))
 
-    pos = vel = integ = tau_f = 0.0
-    tau_lim = plant.torque_limit
+    pos = vel = 0.0
+    # The controller is the SHARED firmware law (sim/control_law.py) — the exact
+    # code the Isaac substrate runs, so an agreement test isolates plant effects.
+    ctrl = FirmwarePositionController(
+        position_kp=gains.position_kp,
+        velocity_kp=gains.velocity_kp,
+        position_ki=gains.position_ki,
+        torque_limit=plant.torque_limit,
+        torque_filter_alpha=plant.torque_filter_alpha,
+    )
 
     ts, tgt, ps, vs = [], [], [], []
     for i in range(n):
         target = step_rad
-        perr = target - pos
-        verr = -vel  # firmware: velocity target is hard-wired 0 in POSITION mode
-
-        # firmware accumulates the integrator per-tick (no dt), then clamps to ±τ_lim
-        integ = float(np.clip(integ + gains.position_ki * perr, -tau_lim, tau_lim))
-        torque_target = (
-            gains.position_kp * perr + gains.velocity_kp * verr + integ
-        )
-        # EMA filter then clamp to the torque limit
-        tau_f += plant.torque_filter_alpha * (torque_target - tau_f)
-        torque = float(np.clip(tau_f, -tau_lim, tau_lim))
+        torque = float(ctrl.step(pos, vel, target))
 
         # plant: J·acc = τ − b·ω − τ_coulomb·sign(ω)   (ideal current loop: i_q→τ)
         friction = plant.coulomb * np.sign(vel)
