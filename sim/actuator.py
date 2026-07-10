@@ -48,6 +48,24 @@ class Plant:
     mesh_stiffness: float = 5.0e3   # N·m/rad, gearbox torsional stiffness when engaged
     mesh_damping: float = 5.0        # N·m·s/rad, mesh contact damping (numerical stability)
 
+    # --- gravity / pendulum load (Phase-1: pose-dependent torque) ---------------
+    # A mass on a horizontal-axis joint: gravity_torque = m·g·r is the PEAK torque
+    # (arm horizontal); it vanishes when the load hangs straight down at gravity_zero.
+    # The load also adds m·r² of inertia (fold into `inertia`, or use Plant.pendulum).
+    gravity_torque: float = 0.0  # N·m, peak gravity load (0 -> no gravity, default)
+    gravity_zero: float = 0.0    # rad, joint angle where the load hangs down (τ_grav = 0)
+
+    @classmethod
+    def pendulum(cls, motor_inertia: float, mass: float, radius: float,
+                 gravity_zero: float = 0.0, g: float = 9.81, **kw) -> "Plant":
+        """Build a Plant for a joint driving a point mass `mass` at `radius`.
+
+        Adds the pendulum inertia (m·r²) to the motor's reflected inertia and sets
+        gravity_torque = m·g·r. Pass damping/coulomb/etc. via kwargs.
+        """
+        return cls(inertia=motor_inertia + mass * radius ** 2,
+                   gravity_torque=mass * g * radius, gravity_zero=gravity_zero, **kw)
+
 
 @dataclass
 class Response:
@@ -98,9 +116,10 @@ def simulate_step(
         torque = float(ctrl.step(pos, vel, target))
 
         if not geared:
-            # single-mass plant: J·acc = τ − b·ω − τ_coulomb·sign(ω)  (ideal current loop)
+            # single-mass plant: J·acc = τ + τ_grav − b·ω − τ_coulomb·sign(ω)
             friction = plant.coulomb * np.sign(vel)
-            acc = (torque - plant.damping * vel - friction) / plant.inertia
+            grav = -plant.gravity_torque * np.sin(pos - plant.gravity_zero)
+            acc = (torque + grav - plant.damping * vel - friction) / plant.inertia
             vel += acc * dt
             pos += vel * dt
         else:
@@ -117,7 +136,8 @@ def simulate_step(
             vel += acc * dt
             pos += vel * dt
             if plant.load_inertia > 0.0:
-                acc_L = (mesh - plant.load_coulomb * np.sign(vel_L)) / plant.load_inertia
+                grav_L = -plant.gravity_torque * np.sin(pos_L - plant.gravity_zero)
+                acc_L = (mesh + grav_L - plant.load_coulomb * np.sign(vel_L)) / plant.load_inertia
                 vel_L += acc_L * dt
                 pos_L += vel_L * dt
 
