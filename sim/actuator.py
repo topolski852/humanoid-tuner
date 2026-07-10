@@ -31,11 +31,22 @@ class Gains:
 
 @dataclass
 class Plant:
-    inertia: float = 8.0e-4     # kg·m², output-shaft reflected
-    damping: float = 0.02       # N·m·s/rad, viscous
-    coulomb: float = 0.0        # N·m, dry friction (Phase 1: randomize)
+    inertia: float = 8.0e-4     # kg·m², motor-side reflected inertia (rotor + gearbox input)
+    damping: float = 0.02       # N·m·s/rad, viscous (motor side)
+    coulomb: float = 0.0        # N·m, dry friction (gearbox friction lives here once geared)
     torque_limit: float = 2.0   # N·m, matches config torque_limit
     torque_filter_alpha: float = 0.1454   # firmware EMA α (~50 Hz at 2 kHz)
+
+    # --- Phase-1 gearbox terms (backward compatible: all 0 -> single-mass plant) ---
+    # A two-mass model: the controlled/encoder-side "motor" (inertia above) drives a
+    # LOAD (load_inertia) through a backlash dead-band + mesh spring. On a free light
+    # shaft backlash is nearly invisible (encoder is motor-side); it shows up with a
+    # LOAD. Calibrate these against real geared+loaded data — first-cut defaults.
+    backlash: float = 0.0        # rad, total dead-band width (output frame)
+    load_inertia: float = 0.0    # kg·m², inertia behind the backlash (0 -> no load stage)
+    load_coulomb: float = 0.0    # N·m, Coulomb on the load side
+    mesh_stiffness: float = 5.0e3   # N·m/rad, gearbox torsional stiffness when engaged
+    mesh_damping: float = 5.0        # N·m·s/rad, mesh contact damping (numerical stability)
 
 
 @dataclass
@@ -77,16 +88,38 @@ def simulate_step(
         torque_filter_alpha=plant.torque_filter_alpha,
     )
 
+    geared = plant.backlash > 0.0 or plant.load_inertia > 0.0
+    pos_L = vel_L = 0.0           # load state (only used in the two-mass/geared model)
+    half_bl = plant.backlash / 2.0
+
     ts, tgt, ps, vs = [], [], [], []
     for i in range(n):
         target = step_rad
         torque = float(ctrl.step(pos, vel, target))
 
-        # plant: J·acc = τ − b·ω − τ_coulomb·sign(ω)   (ideal current loop: i_q→τ)
-        friction = plant.coulomb * np.sign(vel)
-        acc = (torque - plant.damping * vel - friction) / plant.inertia
-        vel += acc * dt
-        pos += vel * dt
+        if not geared:
+            # single-mass plant: J·acc = τ − b·ω − τ_coulomb·sign(ω)  (ideal current loop)
+            friction = plant.coulomb * np.sign(vel)
+            acc = (torque - plant.damping * vel - friction) / plant.inertia
+            vel += acc * dt
+            pos += vel * dt
+        else:
+            # two-mass: motor (encoder-side, reported) drives a load through a backlash
+            # dead-band + mesh spring. Backlash only bites once the load is engaged.
+            gap = pos - pos_L
+            if gap > half_bl:
+                mesh = plant.mesh_stiffness * (gap - half_bl) + plant.mesh_damping * (vel - vel_L)
+            elif gap < -half_bl:
+                mesh = plant.mesh_stiffness * (gap + half_bl) + plant.mesh_damping * (vel - vel_L)
+            else:
+                mesh = 0.0        # in the dead-band: motor free, no torque transmitted
+            acc = (torque - mesh - plant.damping * vel - plant.coulomb * np.sign(vel)) / plant.inertia
+            vel += acc * dt
+            pos += vel * dt
+            if plant.load_inertia > 0.0:
+                acc_L = (mesh - plant.load_coulomb * np.sign(vel_L)) / plant.load_inertia
+                vel_L += acc_L * dt
+                pos_L += vel_L * dt
 
         if i % stride == 0:
             ts.append(i * dt); tgt.append(target); ps.append(pos); vs.append(vel)

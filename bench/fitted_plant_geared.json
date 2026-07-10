@@ -1,0 +1,16 @@
+{
+  "source": "bench/runs/bench_geared_1783713028.json",
+  "geared": true,
+  "motor": "MAD_M6C12_150KV (right_hip_yaw ESC, device 4) + 15:1 gearbox",
+  "fitted_plant": {
+    "inertia": 0.023618749999999997,
+    "damping": 0.22414062500000015,
+    "coulomb": 0.23183593749999998,
+    "latency_s": 0.0105546875
+  },
+  "fit_rms_mrad": 6.375651635626184,
+  "friction_from_ramps": {
+    "coulomb": 0.4636706951446831,
+    "viscous": 0.007021571334983413
+  }
+}

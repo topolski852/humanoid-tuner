@@ -19,12 +19,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import sys
 import time
+import uuid
 
 sys.path.insert(0, "/home/nse/humanoid/humanoid-studio/backend")
 from humanoid.daemon_client import DaemonClient   # noqa: E402
 from humanoid.robot_config import RobotConfig      # noqa: E402
+
+
+def _daemon_cmd(d):
+    """Raw UDP command to the daemon (used for slow-poll mute)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2.0)
+    d = dict(d); d["id"] = str(uuid.uuid4())
+    s.sendto(json.dumps(d).encode(), ("127.0.0.1", 9001))
+    try:
+        return json.loads(s.recvfrom(4096)[0])
+    except Exception:
+        return {}
+    finally:
+        s.close()
 
 CFG = "/home/nse/humanoid/humanoid-studio/configs/bench_right_hip_roll.json"
 JOINT, CHAN, DEV = "right_hip_roll_joint", "can_right_leg", 4
@@ -136,9 +151,30 @@ class Bench:
         return mon, False
 
 
+def _robust_read(c, pid, expect_max):
+    """Read an SDO param 5x and return the median (slow-poll must be OFF).
+
+    With the daemon's bus-voltage slow-poll muted there is no SDO race, so a plain
+    median of clean reads is reliable — and, unlike value-band filtering, it can't
+    mistake a legitimate gain (e.g. kp=20, near the 19.7 V bus) for a race artifact.
+    `expect_max` only guards against a gross out-of-range read.
+    """
+    vals = []
+    for _ in range(5):
+        v = (c.generic_sdo_read(CHAN, DEV, pid) or {}).get("value_f32")
+        if v is not None and abs(v) <= expect_max:
+            vals.append(v)
+        time.sleep(0.03)
+    if not vals:
+        return None
+    vals.sort()
+    return vals[len(vals) // 2]
+
+
 async def main():
     os.makedirs(OUTDIR, exist_ok=True)
     c = DaemonClient(RobotConfig.from_json(CFG)); await c.start(); await asyncio.sleep(0.5)
+    _daemon_cmd({"type": "DISABLE_ALL_SLOW_POLL"}); await asyncio.sleep(0.3)   # stop SDO races
     b = Bench(c)
 
     # pre-flight
@@ -147,10 +183,15 @@ async def main():
     base = round(st.get("position", 0.0), 4)
     print(f"pre-flight: pos={base} bus={st.get('bus_voltage')} error={err_str(e0)}")
     if e0:
-        print("ABORT: firmware error present before start."); await c.stop(); return
-    orig = {n: (c.generic_sdo_read(CHAN, DEV, p) or {}).get("value_f32")
-            for n, p in [("kp", 0x020), ("ki", 0x024), ("kd", 0x028), ("tau", 0x030)]}
+        print("ABORT: firmware error present before start.")
+        _daemon_cmd({"type": "ENABLE_ALL_SLOW_POLL"}); await c.stop(); return
+    # robust snapshot (bounds keep a bus-voltage race from poisoning the restore)
+    orig = {"kp": _robust_read(c, 0x020, 300), "ki": _robust_read(c, 0x024, 50),
+            "kd": _robust_read(c, 0x028, 50), "tau": _robust_read(c, 0x030, 30)}
     print(f"original gains: {orig}")
+    if any(v is None for v in orig.values()):
+        print("ABORT: could not read original gains cleanly.")
+        _daemon_cmd({"type": "ENABLE_ALL_SLOW_POLL"}); await c.stop(); return
     center = round((POS_LO + POS_HI) / 2, 3)
 
     records, aborted = [], False
@@ -171,11 +212,12 @@ async def main():
         if ab or not rep["ok"]:
             print("  probe not clean — stopping before larger steps."); aborted = True
 
-        # 2) step battery (repeatable, both directions)
+        # 2) step battery (repeatable, both directions). Steps capped at 0.3 rad to
+        #    stay under the encoder-at-speed fault the geared joint hits above ~5 rad/s.
         if not aborted:
-            print("\n[BATTERY] 0.5 & 0.3 rad steps, both directions, 2 reps ...")
-            plan = [("+0.5", center + 0.5), ("-0.5", center - 0.5),
-                    ("+0.3", center + 0.3), ("-0.3", center - 0.3)]
+            print("\n[BATTERY] 0.3 & 0.2 rad steps, both directions, 2 reps ...")
+            plan = [("+0.3", center + 0.3), ("-0.3", center - 0.3),
+                    ("+0.2", center + 0.2), ("-0.2", center - 0.2)]
             for rep_i in range(2):
                 for label, tgt in plan:
                     mon, ab = await b.step(center, tgt, dur=1.2)
@@ -195,6 +237,7 @@ async def main():
             print(f"\nrestored original gains: kp={orig['kp']} kd={orig['kd']} ki={orig['ki']} tau={orig['tau']}")
         await b.proxy.disable()
         print(f"final error state: {err_str(b.read_err())}")
+        _daemon_cmd({"type": "ENABLE_ALL_SLOW_POLL"})
         await c.stop()
 
     out = os.path.join(OUTDIR, f"benchmark_{int(time.time())}.json")

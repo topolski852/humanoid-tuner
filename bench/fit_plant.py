@@ -21,8 +21,6 @@ from sim.actuator import Gains, Plant, simulate_step
 
 KT, GEAR = 0.08958, 15.0
 ALPHA = 0.1454
-# gain-set -> torque_limit used during capture (characterize.py GAINSETS)
-TAU_FOR_GAINS = {(20.0, 1.0, 0.0): 2.0, (40.0, 2.0, 0.0): 3.0, (25.0, 0.5, 0.0): 2.0}
 
 
 def _clean(rec):
@@ -59,7 +57,7 @@ def load_steps(path):
             "t": t, "y": pos - p0,                     # zero-based real position
             "delta": r["target"] - r["start"],
             "gains": tuple(r["gains"][:3]),
-            "tau": TAU_FOR_GAINS.get(tuple(r["gains"][:3]), r["gains"][3] if len(r["gains"]) > 3 else 2.0),
+            "tau": r["gains"][3] if len(r["gains"]) > 3 else 2.0,   # torque_limit used at capture
         })
     return d, steps
 
@@ -76,10 +74,11 @@ def objective(params, steps):
 
 
 def fit(steps):
-    # coarse grid then local coordinate refine (no scipy dependency)
-    Js = [0.008, 0.012, 0.016, 0.0224, 0.03, 0.04]
-    bs = [0.0, 0.02, 0.05, 0.1]
-    cs = [0.0, 0.1, 0.2, 0.3, 0.4]
+    # coarse grid then local coordinate refine (no scipy dependency). Bounds wide
+    # enough for the geared joint: much higher friction, possibly higher inertia.
+    Js = [0.008, 0.016, 0.0224, 0.03, 0.045, 0.06, 0.08]
+    bs = [0.0, 0.02, 0.05, 0.1, 0.2]
+    cs = [0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2, 1.8]
     lats = [0.0, 0.005, 0.01, 0.015]
     best, bestp = 1e18, None
     for J in Js:
@@ -90,7 +89,7 @@ def fit(steps):
                     if e < best:
                         best, bestp = e, [J, b, c, lat]
     # refine
-    step = np.array([0.004, 0.02, 0.05, 0.004])
+    step = np.array([0.004, 0.02, 0.1, 0.004])
     p = np.array(bestp, float)
     for _ in range(60):
         improved = False
@@ -131,9 +130,17 @@ def friction_from_ramps(d):
 
 
 def main():
-    path = sorted(glob.glob("bench/runs/bench_full_*.json"))[-1]
+    import sys
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+    else:   # prefer the newest geared run, else the newest bare-motor run
+        cands = sorted(glob.glob("bench/runs/bench_geared_*.json")) or \
+                sorted(glob.glob("bench/runs/bench_full_*.json"))
+        path = cands[-1]
+    geared = "geared" in path
+    out_path = "bench/fitted_plant_geared.json" if geared else "bench/fitted_plant.json"
     d, steps = load_steps(path)
-    print(f"loaded {path}: {len(steps)} step responses")
+    print(f"loaded {path}: {len(steps)} step responses  ({'GEARED' if geared else 'bare motor'})")
 
     p, err = fit(steps)
     J, b, coul, lat = p
@@ -152,13 +159,14 @@ def main():
         print(f"  fit: coulomb={fr['coulomb']:.3f} N·m, viscous={fr['viscous']:.4f} N·m·s/rad")
 
     out = {
-        "source": path, "motor": "MAD_M6C12_150KV (right_hip_yaw ESC, device 4)",
+        "source": path, "geared": geared,
+        "motor": "MAD_M6C12_150KV (right_hip_yaw ESC, device 4)" + (" + 15:1 gearbox" if geared else ""),
         "fitted_plant": {"inertia": J, "damping": b, "coulomb": coul, "latency_s": lat},
         "fit_rms_mrad": float(np.sqrt(err) * 1000),
         "friction_from_ramps": fr and {"coulomb": fr["coulomb"], "viscous": fr["viscous"]},
     }
-    json.dump(out, open("bench/fitted_plant.json", "w"), indent=2)
-    print("\nwrote bench/fitted_plant.json  — drop these into sim Plant / MotorSpec")
+    json.dump(out, open(out_path, "w"), indent=2)
+    print(f"\nwrote {out_path}  — drop these into sim Plant / MotorSpec")
 
 
 if __name__ == "__main__":

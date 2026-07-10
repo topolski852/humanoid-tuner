@@ -24,12 +24,38 @@ import argparse
 import asyncio
 import json
 import os
+import socket
 import sys
 import time
+import uuid
 
 sys.path.insert(0, "/home/nse/humanoid/humanoid-studio/backend")
 from humanoid.daemon_client import DaemonClient   # noqa: E402
 from humanoid.robot_config import RobotConfig      # noqa: E402
+
+
+def _daemon_cmd(d):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2.0)
+    d = dict(d); d["id"] = str(uuid.uuid4())
+    s.sendto(json.dumps(d).encode(), ("127.0.0.1", 9001))
+    try:
+        return json.loads(s.recvfrom(4096)[0])
+    except Exception:
+        return {}
+    finally:
+        s.close()
+
+
+def _robust_read(c, pid, expect_max):
+    """Median of 5 SDO reads (slow-poll must be OFF to avoid the bus-voltage race)."""
+    vals = []
+    for _ in range(5):
+        v = (c.generic_sdo_read("can_right_leg", 4, pid) or {}).get("value_f32")
+        if v is not None and abs(v) <= expect_max:
+            vals.append(v)
+        time.sleep(0.03)
+    vals.sort()
+    return vals[len(vals) // 2] if vals else None
 
 CFG = "/home/nse/humanoid/humanoid-studio/configs/bench_right_hip_roll.json"
 JOINT = "right_hip_roll_joint"
@@ -110,16 +136,52 @@ class Bench:
         return {"kind": "ramp", "gains": gains, "start": start, "end": end,
                 "speed": speed, "t": ts, "pos": pos, "vel": vel, "cmd": tcmd, "iq": iq}
 
+    async def record_sweep(self, center, amp, speed, gains, cycles=3, poll_hz=200):
+        """Slow triangle sweep with multiple reversals — exposes backlash/hysteresis.
+
+        On a free motor-side-encoder shaft backlash is nearly invisible; this pays
+        off once a LOAD is on the output. Logs fine pos/vel + i_q through each
+        reversal so the dead-band (if any) is captured.
+        """
+        kp, kd, ki, tau = gains
+        await self.set_gains(kp, kd, ki, tau)
+        lo, hi = _clamp(center - amp), _clamp(center + amp)
+        await self.goto(lo, 0.8)
+        t0 = time.perf_counter()
+        ts, pos, vel, cmd, iq = [], [], [], [], []
+        legs = []
+        tgt = lo
+        for _ in range(cycles):
+            legs += [hi, lo]
+        last_iq = -1.0
+        for goal in legs:
+            direction = 1.0 if goal >= tgt else -1.0
+            while (direction > 0 and tgt < goal) or (direction < 0 and tgt > goal):
+                el = time.perf_counter() - t0
+                tgt = _clamp(tgt + direction * speed * (1.0 / poll_hz))
+                self.c.set_position(JOINT, tgt)
+                st = self.state()
+                ts.append(el); cmd.append(tgt)
+                pos.append(st.get("position")); vel.append(st.get("velocity"))
+                if el - last_iq > 0.04:
+                    iq.append((el, self.iq())); last_iq = el
+                await asyncio.sleep(1.0 / poll_hz)
+        return {"kind": "sweep", "gains": gains, "center": center, "amp": amp,
+                "speed": speed, "cycles": cycles, "t": ts, "pos": pos, "vel": vel,
+                "cmd": cmd, "iq": iq}
+
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["probe", "full"])
+    ap.add_argument("mode", choices=["probe", "full", "geared"])
     args = ap.parse_args()
     os.makedirs(OUTDIR, exist_ok=True)
 
     c = DaemonClient(RobotConfig.from_json(CFG))
     await c.start()
     await asyncio.sleep(0.5)
+    _daemon_cmd({"type": "DISABLE_ALL_SLOW_POLL"})   # avoid bus-voltage SDO race on gain reads
+    await asyncio.sleep(0.3)
     b = Bench(c)
 
     st = b.state()
@@ -127,10 +189,10 @@ async def main():
     print(f"start: joint_state={st.get('joint_state')} pos={base} bus={st.get('bus_voltage')}")
     center = round((POS_LO + POS_HI) / 2, 3)   # ~0.11 rad, centers the excitation
 
-    # snapshot original gains to restore (read from device)
-    orig = {p: c.generic_sdo_read(CHAN, DEV, pid) for p, pid in
-            [("kp", 0x020), ("ki", 0x024), ("kd", 0x028), ("tau", 0x030)]}
-    ok = {k: (v or {}).get("value_f32") for k, v in orig.items()}
+    # snapshot original gains to restore — robust median reads, sane bounds so a
+    # stray bus-voltage read can never poison the restore (the bug that wrote ki=19.7).
+    ok = {"kp": _robust_read(c, 0x020, 300), "ki": _robust_read(c, 0x024, 50),
+          "kd": _robust_read(c, 0x028, 50), "tau": _robust_read(c, 0x030, 30)}
     print(f"original gains (to restore): kp={ok['kp']} ki={ok['ki']} kd={ok['kd']} tau_lim={ok['tau']}")
 
     results = []
@@ -147,7 +209,7 @@ async def main():
             pk = max([p for p in r["pos"] if p is not None], default=None)
             print(f"  reached max pos {pk:.4f} (target {r['target']:.4f}), "
                   f"{sum(v is not None for v in r['vel'])} samples logged")
-        else:
+        elif args.mode == "full":
             GAINSETS = [(20.0, 1.0, 0.0, 2.0), (40.0, 2.0, 0.0, 3.0), (25.0, 0.5, 0.0, 2.0)]
             STEPS = [0.15, -0.15, 0.3, -0.3, 0.5, -0.5]
             for g in GAINSETS:
@@ -163,6 +225,46 @@ async def main():
                     print(f"  ramp {sgn*sp:+.1f} rad/s: {len(iqs)} i_q samples, "
                           f"mean={sum(iqs)/len(iqs):.4f} A" if iqs else f"  ramp {sgn*sp:+.1f}: no iq")
                     results.append(r)
+
+        if args.mode == "geared":
+            # GEARBOX attached: dynamics are slower + friction is much higher, so use
+            # longer step windows, more torque headroom, and LOW-speed ramps over the
+            # full range. Backlash needs a load to be observable (motor-side encoder).
+            def _err():
+                r = c.generic_sdo_read(CHAN, DEV, 0x014)
+                return (r or {}).get("value_u32") or 0
+            if _err():
+                print(f"  ABORT: firmware error 0x{_err():04X} before start")
+            else:
+                TAU = 4.0                                   # headroom over gearbox friction
+                GAINSETS = [(40.0, 2.0, 0.0, TAU), (60.0, 3.0, 0.0, TAU)]
+                STEPS = [0.2, -0.2, 0.4, -0.4, 0.6, -0.6]
+                print(f"[geared] step battery (2.5s windows, tau_lim={TAU}) ...")
+                for g in GAINSETS:
+                    for s in STEPS:
+                        r = await b.record_step(center, center + s, g, dur=2.5)
+                        results.append(r)
+                        pk = max((abs(v) for v in r["vel"] if v is not None), default=0)
+                        print(f"  step {s:+.2f} gains{g[:3]} -> {sum(v is not None for v in r['vel'])} samples, vpk={pk:.2f}"
+                              + ("  ⚠ERROR" if _err() else ""))
+                        if _err():
+                            print("  ABORT: firmware error mid-battery"); break
+                    if _err():
+                        break
+                if not _err():
+                    print("[geared] low-speed friction ramps (full range, long) ...")
+                    for sp in [0.1, 0.2, 0.4]:
+                        for sgn in (+1, -1):
+                            r = await b.record_ramp(center - sgn * 0.5, center + sgn * 0.5, sp, (50.0, 1.0, 0.0, TAU))
+                            iqs = [v for _, v in r["iq"] if v is not None]
+                            tau_ss = (sum(sorted(iqs)[len(iqs)//3:]) / max(1, len(iqs) - len(iqs)//3)) * KT * GEAR if iqs else 0
+                            print(f"  ramp {sgn*sp:+.2f} rad/s: {len(iqs)} iq, friction≈{tau_ss:+.3f} N·m")
+                            results.append(r)
+                if not _err():
+                    print("[geared] slow backlash sweep (0.05 rad/s, needs a load to show play) ...")
+                    r = await b.record_sweep(center, amp=0.5, speed=0.05, gains=(50.0, 1.0, 0.0, TAU), cycles=2)
+                    results.append(r)
+                    print(f"  sweep: {sum(v is not None for v in r['vel'])} samples over {r['t'][-1]:.1f}s")
     finally:
         # park, restore original gains (RAM), IDLE — never flash
         await b.goto(center, settle=0.5)
@@ -170,6 +272,7 @@ async def main():
             await b.set_gains(ok["kp"], ok["kd"], ok["ki"], ok["tau"])
             print(f"restored original gains kp={ok['kp']} kd={ok['kd']} ki={ok['ki']} tau={ok['tau']}")
         await c.get_actuator_by_name(JOINT).disable()   # IDLE
+        _daemon_cmd({"type": "ENABLE_ALL_SLOW_POLL"})
         await c.stop()
 
     stamp = int(time.time())
