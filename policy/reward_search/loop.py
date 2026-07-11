@@ -78,10 +78,17 @@ def _progress_bar(gen: int, total: int, best_fit: float, t_start: float, width: 
     """
     frac = gen / total if total else 1.0
     elapsed = time.perf_counter() - t_start
-    eta = (elapsed / frac - elapsed) if frac > 0 else 0.0
+    per_gen = elapsed / gen if gen else 0.0
+    eta_max = (elapsed / frac - elapsed) if frac > 0 else 0.0
+    # With patience, the run most likely stops when the plateau counter hits patience
+    # (unless a new best resets it). Show THAT ETA — not the misleading run-to-max ETA.
+    if patience:
+        eta = min((patience - stale) * per_gen, eta_max)
+        plateau = f"  plateau {stale}/{patience}"
+    else:
+        eta, plateau = eta_max, ""
     filled = int(width * frac)
     bar = "█" * filled + "░" * (width - filled)
-    plateau = f"  plateau {stale}/{patience}" if patience else ""
     sys.stderr.write(
         f"\r[{bar}] {frac * 100:5.1f}%  gen {gen}/{total}  best={best_fit:8.4f}  "
         f"elapsed {_fmt_hms(elapsed)}  ETA {_fmt_hms(eta)}{plateau}    "
