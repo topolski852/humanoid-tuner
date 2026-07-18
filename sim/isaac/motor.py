@@ -149,7 +149,10 @@ MAD5010_200KV = MotorSpec(
         "(6 ramps agree ±10%), viscous ~0. Inertia has ~40% spread because the light "
         "motor must be driven gently (velocity-capped) — steps are partly rate-limited. "
         "Kt firmware 0.06588. R datasheet; L unpublished. NOTE: fit_plant.py hardcodes "
-        "the M6 Kt for its ramp cross-check, so its printed ramp torques run ~1.36x high."
+        "the M6 Kt for its ramp cross-check, so its printed ramp torques run ~1.36x high. "
+        "GEARED cross-check (15:1 attached, bench/runs/char5010_geared.json): output "
+        "inertia ~0.012 (unchanged), Coulomb 0.019 N·m motor / 0.29 output (~15% higher) "
+        "— like the M6, the gearbox only adds friction, so bare-derived gains carry over."
     ),
 )
 

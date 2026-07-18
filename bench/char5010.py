@@ -30,6 +30,9 @@ VLIM = 3.0                 # rad/s output firmware cap (~45 rad/s motor) — har
 VEL_ABORT = 5.0            # rad/s output — software abort (~75 rad/s motor, 4x below vibration)
 CENTER = 0.785             # mid of [0,1.57]
 OUTDIR = os.path.join(os.path.dirname(__file__), "runs")
+# "geared" (gearbox attached) vs "bare" — only changes the output filename/flag so
+# fit_plant.py picks the right fit target. The ESC gear=-15 is unchanged either way.
+TAG = "geared" if (len(sys.argv) > 1 and sys.argv[1].lower() == "geared") else "bare"
 
 
 def rd(c, pid, kind="f32"):
@@ -93,8 +96,8 @@ class Bench:
 
 def save(results, orig):
     os.makedirs(OUTDIR, exist_ok=True)
-    out = os.path.join(OUTDIR, "char5010_latest.json")
-    json.dump({"joint": JOINT, "device_id": DEV, "Kt": KT, "gear": GEAR,
+    out = os.path.join(OUTDIR, f"char5010_{TAG}.json")
+    json.dump({"joint": JOINT, "device_id": DEV, "Kt": KT, "gear": GEAR, "geared": TAG == "geared",
                "pos_limits": [0.0, 1.5708], "center": CENTER, "orig_gains": orig,
                "results": results}, open(out, "w"))
     return out
