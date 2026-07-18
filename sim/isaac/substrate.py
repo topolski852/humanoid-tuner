@@ -29,6 +29,7 @@ import os
 import numpy as np
 
 from sim.control_law import FirmwarePositionController
+from sim.motor_model import FrictionModel
 
 # NOTE: import from paths (pxr-free), NOT build_asset — importing pxr before
 # Isaac's AppLauncher boots corrupts the USD bindings.
@@ -112,13 +113,24 @@ class IsaacSingleJoint:
         torque_limit: float,
         torque_filter_alpha: float,
         sample_hz: float = 100.0,
+        breakaway: float | None = None,   # stick-slip static friction; None -> == coulomb (no stiction)
+        stribeck_vel: float = 0.05,
+        stick_vel: float = 0.02,
     ) -> dict:
-        """Drive a 0 -> step_rad position step on all N envs; return sampled arrays."""
+        """Drive a 0 -> step_rad position step on all N envs; return sampled arrays.
+
+        Applies the SAME stick-slip friction as the numpy MotorModel (breakaway/Stribeck
+        static hold + viscous), so a numpy-vs-Isaac disagreement isolates the PhysX solver,
+        not the friction model. breakaway=None reduces to plain Coulomb (legacy agreement test).
+        """
         import torch
 
         gains = np.asarray(gains, dtype=float).reshape(self.num_envs, 3)
         n = int(duration * self.ctrl_hz)
         stride = max(1, int(round(self.ctrl_hz / sample_hz)))
+        friction = FrictionModel(coulomb=coulomb,
+                                 breakaway=coulomb if breakaway is None else breakaway,
+                                 stribeck_vel=stribeck_vel, viscous=damping, stick_vel=stick_vel)
 
         ctrl = FirmwarePositionController(
             position_kp=gains[:, 0],
@@ -140,8 +152,9 @@ class IsaacSingleJoint:
         for i in range(n):
             q, qd = self._read()                         # state S_i (pre-step)
             tau_ctrl = ctrl.step(q, qd, target)          # shared firmware law, [N]
-            # net joint torque the numpy plant integrates: actuator - viscous - coulomb
-            effort = tau_ctrl - damping * qd - coulomb * np.sign(qd)
+            # net joint torque = actuator - stick-slip friction (drive=tau_ctrl, no load).
+            # Exactly what the numpy MotorModel.applied_torque integrates.
+            effort = tau_ctrl - friction.torque(qd, drive=tau_ctrl, tau_load=0.0)
             tau = torch.as_tensor(effort, dtype=torch.float32, device=self.sim.device).reshape(-1, 1)
 
             self.robot.set_joint_effort_target_index(target=tau)
@@ -179,6 +192,9 @@ def _rollout_job(sim: "IsaacSingleJoint", job: dict, gains: np.ndarray) -> dict:
         torque_limit=float(job.get("torque_limit", 2.0)),
         torque_filter_alpha=float(job.get("torque_filter_alpha", 0.1454)),
         sample_hz=float(job.get("sample_hz", 100.0)),
+        breakaway=(None if job.get("breakaway") is None else float(job["breakaway"])),
+        stribeck_vel=float(job.get("stribeck_vel", 0.05)),
+        stick_vel=float(job.get("stick_vel", 0.02)),
     )
     return {
         "t": out["t"].tolist(),

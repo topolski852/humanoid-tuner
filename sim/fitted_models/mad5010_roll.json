@@ -1,0 +1,32 @@
+{
+  "name": "mad5010_roll",
+  "motor_type": "MAD_5010_200KV",
+  "Kt": 0.06588000059127808,
+  "gear": 15.0,
+  "inertia": 0.013666666666666667,
+  "friction": {
+    "coulomb": 0.22179159519305214,
+    "breakaway": 0.24882549047469948,
+    "stribeck_vel": 0.05,
+    "viscous": 0.07135123797931722,
+    "load_sensitivity": 0.0,
+    "stick_vel": 0.02
+  },
+  "latency_s": 0.0,
+  "torque_limit": 3.0,
+  "fit": {
+    "rollout_rms_mrad": 12.700450802125298,
+    "n_ramps": 8,
+    "n_stiction": 4,
+    "n_dynamic": 12,
+    "gain_validation_mrad": {
+      "kp20_kd0.5": 15.55,
+      "kp20_kd1.5": 11.58,
+      "kp40_kd1.5": 10.67,
+      "kp60_kd1.5": 9.62,
+      "kp40_kd0.5": 22.4,
+      "kp40_kd3": 6.39
+    }
+  },
+  "source": "model_raw_mad5010_roll.json"
+}

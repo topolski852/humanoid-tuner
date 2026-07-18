@@ -1,0 +1,32 @@
+{
+  "name": "m6c12_pitch",
+  "motor_type": "MAD_M6C12_150KV",
+  "Kt": 0.08958,
+  "gear": 15.0,
+  "inertia": 0.025,
+  "friction": {
+    "coulomb": 0.4292946878122935,
+    "breakaway": 0.4292946878122935,
+    "stribeck_vel": 0.05,
+    "viscous": 0.1374364265239397,
+    "load_sensitivity": 0.0,
+    "stick_vel": 0.02
+  },
+  "latency_s": 0.0,
+  "torque_limit": 3.0,
+  "fit": {
+    "rollout_rms_mrad": 10.660529338884793,
+    "n_ramps": 8,
+    "n_stiction": 4,
+    "n_dynamic": 12,
+    "gain_validation_mrad": {
+      "kp20_kd0.5": 9.29,
+      "kp20_kd1.5": 9.57,
+      "kp40_kd1.5": 16.84,
+      "kp60_kd1.5": 10.81,
+      "kp40_kd0.5": 10.33,
+      "kp40_kd3": 7.12
+    }
+  },
+  "source": "model_raw_m6c12_pitch.json"
+}
