@@ -1,15 +1,16 @@
 {
-  "source": "bench/runs/bench_full_1783691564.json",
+  "source": "bench/runs/char5010_latest.json",
+  "geared": false,
   "motor": "MAD_M6C12_150KV (right_hip_yaw ESC, device 4)",
   "fitted_plant": {
-    "inertia": 0.027427368164062497,
-    "damping": 0.022825164794921863,
-    "coulomb": 0.30229949951171875,
-    "latency_s": 0.0071992187500000025
+    "inertia": 0.009872833251953124,
+    "damping": 0.0,
+    "coulomb": 0.022921752929687508,
+    "latency_s": 0.014226287841796876
   },
-  "fit_rms_mrad": 10.799316031546166,
+  "fit_rms_mrad": 2.9257145122821453,
   "friction_from_ramps": {
-    "coulomb": 0.33324494788683967,
-    "viscous": 0.009934774089817452
+    "coulomb": -0.26785420519150815,
+    "viscous": -0.022430385433137034
   }
 }

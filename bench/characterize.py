@@ -50,7 +50,7 @@ def _robust_read(c, pid, expect_max):
     """Median of 5 SDO reads (slow-poll must be OFF to avoid the bus-voltage race)."""
     vals = []
     for _ in range(5):
-        v = (c.generic_sdo_read("can_right_leg", 4, pid) or {}).get("value_f32")
+        v = (c.generic_sdo_read(CHAN, DEV, pid) or {}).get("value_f32")
         if v is not None and abs(v) <= expect_max:
             vals.append(v)
         time.sleep(0.03)
@@ -172,12 +172,29 @@ class Bench:
 
 
 async def main():
+    global CFG, JOINT, CHAN, DEV, KT, GEAR, POS_LO, POS_HI
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["probe", "full", "geared"])
+    ap.add_argument("--config", default=CFG, help="daemon config JSON")
+    ap.add_argument("--joint", default=JOINT, help="joint name in the config")
+    ap.add_argument("--kp", type=float, default=25.0, help="probe kp")
+    ap.add_argument("--kd", type=float, default=1.5, help="probe kd")
+    ap.add_argument("--tau", type=float, default=2.0, help="probe torque_limit (LOW for low-inertia motors)")
+    ap.add_argument("--step", type=float, default=0.12, help="probe step magnitude (rad, output frame)")
+    ap.add_argument("--center", type=float, default=None, help="excitation center (rad); default = mid-range")
     args = ap.parse_args()
     os.makedirs(OUTDIR, exist_ok=True)
 
-    c = DaemonClient(RobotConfig.from_json(CFG))
+    # derive motor params from the config so this works for any joint
+    CFG, JOINT = args.config, args.joint
+    _cfg = RobotConfig.from_json(CFG)
+    _jc = _cfg.joints[JOINT]
+    CHAN, DEV = _jc.can_channel, _jc.can_id
+    KT, GEAR = _jc.torque_constant, abs(_jc.gear_ratio)
+    POS_LO, POS_HI = _jc.position_limits.lower_bound, _jc.position_limits.upper_bound
+    print(f"[cfg] joint={JOINT} chan={CHAN} dev={DEV} Kt={KT} gear={GEAR} limits=[{POS_LO:.3f},{POS_HI:.3f}]")
+
+    c = DaemonClient(_cfg)
     await c.start()
     await asyncio.sleep(0.5)
     _daemon_cmd({"type": "DISABLE_ALL_SLOW_POLL"})   # avoid bus-voltage SDO race on gain reads
@@ -187,7 +204,7 @@ async def main():
     st = b.state()
     base = round(st.get("position", 0.0), 4)
     print(f"start: joint_state={st.get('joint_state')} pos={base} bus={st.get('bus_voltage')}")
-    center = round((POS_LO + POS_HI) / 2, 3)   # ~0.11 rad, centers the excitation
+    center = args.center if args.center is not None else round((POS_LO + POS_HI) / 2, 3)
 
     # snapshot original gains to restore — robust median reads, sane bounds so a
     # stray bus-voltage read can never poison the restore (the bug that wrote ki=19.7).
@@ -203,12 +220,16 @@ async def main():
         await asyncio.sleep(0.3)
 
         if args.mode == "probe":
-            print("PROBE: one gentle 0.12 rad step (kp=25, kd=1.5, tau_lim=2.0) ...")
-            r = await b.record_step(center, center + 0.12, (25.0, 1.5, 0.0, 2.0))
+            print(f"PROBE: {args.step:+.2f} rad step (kp={args.kp}, kd={args.kd}, tau_lim={args.tau}) ...")
+            r = await b.record_step(center, center + args.step, (args.kp, args.kd, 0.0, args.tau))
             results.append(r)
             pk = max([p for p in r["pos"] if p is not None], default=None)
+            vpk = max([abs(v) for v in r["vel"] if v is not None], default=0)
+            err = c.generic_sdo_read(CHAN, DEV, 0x014)
             print(f"  reached max pos {pk:.4f} (target {r['target']:.4f}), "
-                  f"{sum(v is not None for v in r['vel'])} samples logged")
+                  f"{sum(v is not None for v in r['vel'])} samples")
+            print(f"  peak output vel {vpk:.2f} rad/s = {vpk*GEAR:.0f} rad/s motor  "
+                  f"(AS5600 fault risk >~83)   firmware error: 0x{(err or {}).get('value_u32',0):04X}")
         elif args.mode == "full":
             GAINSETS = [(20.0, 1.0, 0.0, 2.0), (40.0, 2.0, 0.0, 3.0), (25.0, 0.5, 0.0, 2.0)]
             STEPS = [0.15, -0.15, 0.3, -0.3, 0.5, -0.5]
